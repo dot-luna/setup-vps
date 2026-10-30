@@ -33,6 +33,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Install Starship for native prompt checks
+        if: matrix.image == 'debian:13'
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://starship.rs/install.sh -o /tmp/starship-install.sh
+          sh /tmp/starship-install.sh --yes --bin-dir /usr/local/bin
       - name: Validate shell and behavior
         run: |
           bash -n setup-deb.sh
