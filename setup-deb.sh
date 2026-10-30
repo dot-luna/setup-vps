@@ -363,6 +363,11 @@ verify_install() {
     as_user zsh -ic '[[ $+functions[z] == 1 && $+functions[fzf-history-widget] == 1 && $+functions[_zsh_highlight] == 1 ]]' <&3
 }
 
+cleanup_packages() {
+    log 'Removing unused apt dependencies'
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 autoremove -y
+}
+
 print_summary() {
     log 'Setup complete'
     printf 'Configured user: %s\nDefault shell: /usr/bin/zsh\nSystem info: %s\n' "$TARGET_USER" "$FETCH_TOOL"
@@ -407,6 +412,7 @@ main() {
     configure_zsh
     configure_git
     configure_ssh
+    cleanup_packages
     verify_install
     print_summary
 }

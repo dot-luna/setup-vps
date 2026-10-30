@@ -304,6 +304,31 @@ install_system_packages
             self.assertIn(package, lines[2].split(";")[0].split())
         self.assertNotIn("fastfetch", lines[2])
 
+    def test_final_cleanup_is_noninteractive_and_failure_prevents_success_output(self):
+        for status in (0, 42):
+            with self.subTest(status=status):
+                result = self.bash(
+                    r'''
+apt-get() {
+    [[ "$DEBIAN_FRONTEND" == noninteractive ]] || exit 9
+    [[ "$*" == '-o DPkg::Lock::Timeout=120 autoremove -y' ]] || exit 10
+    printf 'cleanup attempted\n'
+    return "$TEST_APT_STATUS"
+}
+verify_install() { printf 'verification after cleanup\n'; }
+cleanup_packages
+verify_install
+print_summary
+''',
+                    env={"TEST_APT_STATUS": status, "FETCH_TOOL": "fastfetch"},
+                    expected=status,
+                )
+                self.assertIn("cleanup attempted", result.stdout)
+                self.assertEqual("verification after cleanup" in result.stdout, status == 0)
+                self.assertEqual("Setup complete" in result.stdout, status == 0)
+                if status == 0:
+                    self.assertLess(result.stdout.index("cleanup attempted"), result.stdout.index("verification after cleanup"))
+
     def test_docker_conflicts_only_block_installed_packages(self):
         result = self.bash(
             r'''

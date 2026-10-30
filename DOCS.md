@@ -26,7 +26,8 @@ Universe repository to be enabled.
    or public key paths are kept. This key is for outgoing connections, such as
    GitHub; incoming VPS login needs your computer's public key in
    `~/.ssh/authorized_keys`.
-7. Verify the tools, Zsh integrations, and Docker daemon. Print login and reboot
+7. Run `apt-get autoremove -y` to remove unused dependencies, then verify the
+   tools, Zsh integrations, and Docker daemon. Print login and reboot
    guidance. Reconnect to activate the default shell and changed groups.
 
 Yes/no prompts default to **no**. Closed input or a command failure stops setup
