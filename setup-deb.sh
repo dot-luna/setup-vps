@@ -423,9 +423,9 @@ style = 'bold yellow'
 format = '\[[took $duration]($style)\]'
 
 [character]
-success_symbol = '[>](bold green)'
-error_symbol = '[>](bold red)'
-vimcmd_symbol = '[<](bold yellow)'
+success_symbol = '[❯](bold green)'
+error_symbol = '[❯](bold red)'
+vimcmd_symbol = '[❮](bold green)'
 
 # Explicit Tokyo Night Night colors work without a terminal theme or Luna files.
 # https://github.com/folke/tokyonight.nvim/blob/main/extras/lua/tokyonight_night.lua

@@ -1002,7 +1002,7 @@ printf 'replacement\n' | "$TEST_WRITER" "$TEST_DESTINATION"
             STARSHIP_CONFIG=str(self.home / ".config/setup-vps/starship.toml"),
             STARSHIP_CACHE=str(self.work / "starship-cache"),
             STARSHIP_LOG="error",
-            STARSHIP_SHELL="bash",
+            STARSHIP_SHELL="zsh",
             TERM="xterm-256color",
             COLORTERM="truecolor",
             GIT_CONFIG_GLOBAL="/dev/null",
@@ -1033,8 +1033,14 @@ printf 'replacement\n' | "$TEST_WRITER" "$TEST_DESTINATION"
         self.assertIn("[git:palette-test]", re.sub(r"\x1b\[[0-9;]*m", "", branch))
         self.assertIn("38;2;157;124;216", branch)
         self.assertIn("38;2;125;207;255", render("directory"))
-        self.assertIn("38;2;158;206;106", render("character", "--status", "0"))
-        self.assertIn("38;2;247;118;142", render("character", "--status", "1"))
+        for status, color in (("0", "38;2;158;206;106"), ("1", "38;2;247;118;142")):
+            with self.subTest(status=status):
+                character = render("character", "--status", status)
+                self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", character).strip(), "❯")
+                self.assertIn(color, character)
+        command_character = render("character", "--status", "0", "--keymap", "vicmd")
+        self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", command_character).strip(), "❮")
+        self.assertIn("38;2;158;206;106", command_character)
 
     @unittest.skipUnless(shutil.which("zsh"), "Zsh is required")
     def test_generated_zsh_loads_integrations_and_aliases_after_repeated_setup(self):

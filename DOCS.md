@@ -71,8 +71,9 @@ behavior. `bat` and `fd` links expose Debian's `batcat` and `fdfind` names.
 Run `fastfetch` or `neofetch` manually to show system information.
 
 Starship uses Luna-style bracketed modules with a built-in Tokyo Night palette,
-two-component directory truncation, and a cyan Git repository root. Its colors
-are defined in `~/.config/setup-vps/starship.toml`; no Kitty or Luna theme files
+two-component directory truncation, and a cyan Git repository root. The prompt
+character is `❯` (`❮` in Vim command mode), matching the desktop. Colors are
+defined in `~/.config/setup-vps/starship.toml`; no Kitty or Luna theme files
 are needed. The prompt colors work over SSH in a terminal with true-color
 support. The terminal's background and font are still configured locally.
 
