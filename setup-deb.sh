@@ -331,30 +331,123 @@ source "$HOME/.local/share/setup-vps/plugins/zsh-autosuggestions/zsh-autosuggest
 source "$HOME/.local/share/setup-vps/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 EOF
     write_user_file "$TARGET_HOME/.config/setup-vps/starship.toml" <<'EOF'
-add_newline = false
+"$schema" = 'https://starship.rs/config-schema.json'
+palette = 'tokyo_night'
+add_newline = true
 command_timeout = 200
-format = "$username$hostname$directory$git_branch$git_status$cmd_duration$line_break$character"
+format = '$username$hostname$directory$git_branch$git_commit$git_state$git_status$docker_context$nodejs$bun$python$rust$golang$package$jobs$cmd_duration$line_break$character'
 
+# Keep the account and host visible when switching users on a VPS.
 [username]
 show_always = true
-format = "[$user]($style)@"
+style_user = 'bold green'
+style_root = 'bold red'
+format = '\[[$user]($style)\]'
 
 [hostname]
 ssh_only = false
-format = "[$hostname]($style) "
+ssh_symbol = ''
+style = 'bold yellow'
+format = '\[[$hostname]($style)\] '
 
 [directory]
 truncation_length = 2
-truncation_symbol = "…/"
-repo_root_style = "cyan"
+truncation_symbol = '…/'
+style = 'bold blue'
+repo_root_style = 'bold cyan'
+repo_root_format = '[$repo_root]($repo_root_style)[$path]($style)[$read_only]($read_only_style) '
+read_only = ' ro'
 
+# Text symbols keep the bracketed Luna prompt usable without a Nerd Font.
 [git_branch]
-symbol = "git:"
-format = "[$symbol$branch]($style) "
+symbol = 'git:'
+style = 'bold purple'
+format = '\[[$symbol$branch]($style)\]'
+
+[git_commit]
+tag_symbol = ' tag:'
+style = 'bold green'
+format = '\[[\($hash$tag\)]($style)\]'
+
+[git_state]
+style = 'bold yellow'
+format = '\[[$state ($progress_current/$progress_total)]($style)\]'
+
+[git_status]
+style = 'bold red'
+format = '([\[$all_status$ahead_behind\]]($style))'
+
+[docker_context]
+symbol = 'docker:'
+style = 'bold cyan'
+format = '\[[$symbol$context]($style)\]'
+
+[nodejs]
+symbol = 'node:'
+style = 'bold green'
+format = '\[[$symbol($version)]($style)\]'
+
+[bun]
+symbol = 'bun:'
+style = 'bold white'
+format = '\[[$symbol($version)]($style)\]'
+
+[python]
+symbol = 'py:'
+style = 'bold yellow'
+format = '\[[${symbol}${pyenv_prefix}(${version})(\($virtualenv\))]($style)\]'
+
+[rust]
+symbol = 'rs:'
+style = 'bold red'
+format = '\[[$symbol($version)]($style)\]'
+
+[golang]
+symbol = 'go:'
+style = 'bold cyan'
+format = '\[[$symbol($version)]($style)\]'
+
+[package]
+symbol = 'pkg:'
+style = 'bold bright-white'
+format = '\[[$symbol$version]($style)\]'
+
+[jobs]
+symbol = 'jobs:'
+number_threshold = 1
+style = 'bold blue'
+format = '\[[$symbol$number]($style)\]'
+
+[cmd_duration]
+style = 'bold yellow'
+format = '\[[took $duration]($style)\]'
 
 [character]
-success_symbol = "[>](bold green)"
-error_symbol = "[>](bold red)"
+success_symbol = '[>](bold green)'
+error_symbol = '[>](bold red)'
+vimcmd_symbol = '[<](bold yellow)'
+
+# Explicit Tokyo Night Night colors work without a terminal theme or Luna files.
+# https://github.com/folke/tokyonight.nvim/blob/main/extras/lua/tokyonight_night.lua
+[palettes.tokyo_night]
+black = '#15161e'
+red = '#f7768e'
+green = '#9ece6a'
+yellow = '#e0af68'
+blue = '#7aa2f7'
+purple = '#9d7cd8'
+magenta = '#bb9af7'
+cyan = '#7dcfff'
+white = '#a9b1d6'
+bright-black = '#414868'
+bright-red = '#ff899d'
+bright-green = '#9fe044'
+bright-yellow = '#faba4a'
+bright-blue = '#8db0ff'
+bright-purple = '#c7a9ff'
+bright-magenta = '#c7a9ff'
+bright-cyan = '#a4daff'
+bright-white = '#c0caf5'
 EOF
     as_user "$TARGET_HOME/.local/bin/mise" completion zsh > "$WORK_DIR/mise-completion.zsh"
     [[ -s "$WORK_DIR/mise-completion.zsh" ]] || die 'mise generated empty Zsh completion.'

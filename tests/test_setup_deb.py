@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import pty
 import shutil
 import stat
@@ -982,6 +983,58 @@ printf 'replacement\n' | "$TEST_WRITER" "$TEST_DESTINATION"
                 self.assertEqual(original.read_text(), "unrelated content\n")
                 self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o644)
                 self.assertEqual(sorted(p.name for p in folder.iterdir()), ["managed config", "unrelated"])
+
+    @unittest.skipUnless(
+        shutil.which("starship") and shutil.which("zsh") and shutil.which("git"),
+        "Starship, Zsh, and Git are required for native prompt rendering",
+    )
+    def test_native_starship_uses_tokyo_night_colors_and_luna_brackets(self):
+        binaries = self.home / ".local/bin"
+        binaries.mkdir(parents=True)
+        mise = binaries / "mise"
+        mise.write_text("#!/bin/sh\nprintf '# completion fixture\\n'\n")
+        mise.chmod(0o755)
+        self.bash(LOCAL_USER + "chsh() { :; }\nconfigure_zsh")
+        repository = self.directory / "prompt-repo"
+        environment = dict(
+            os.environ,
+            HOME=str(self.home),
+            STARSHIP_CONFIG=str(self.home / ".config/setup-vps/starship.toml"),
+            STARSHIP_CACHE=str(self.work / "starship-cache"),
+            STARSHIP_LOG="error",
+            STARSHIP_SHELL="bash",
+            TERM="xterm-256color",
+            COLORTERM="truecolor",
+            GIT_CONFIG_GLOBAL="/dev/null",
+            GIT_CONFIG_NOSYSTEM="1",
+        )
+        environment.pop("NO_COLOR", None)
+        subprocess.run(
+            ["git", "init", "-q", "-b", "palette-test", str(repository)],
+            env=environment,
+            capture_output=True,
+            check=True,
+        )
+
+        def render(module, *arguments):
+            result = subprocess.run(
+                [shutil.which("starship"), "module", module,
+                 "--path", str(repository), "--logical-path", str(repository), *arguments],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            return result.stdout
+
+        branch = render("git_branch")
+        self.assertIn("[git:palette-test]", re.sub(r"\x1b\[[0-9;]*m", "", branch))
+        self.assertIn("38;2;157;124;216", branch)
+        self.assertIn("38;2;125;207;255", render("directory"))
+        self.assertIn("38;2;158;206;106", render("character", "--status", "0"))
+        self.assertIn("38;2;247;118;142", render("character", "--status", "1"))
 
     @unittest.skipUnless(shutil.which("zsh"), "Zsh is required")
     def test_generated_zsh_loads_integrations_and_aliases_after_repeated_setup(self):

@@ -70,6 +70,12 @@ interactively. `ll`, `la`, and `lt` use eza. `cat` and `ls` keep their normal
 behavior. `bat` and `fd` links expose Debian's `batcat` and `fdfind` names.
 Run `fastfetch` or `neofetch` manually to show system information.
 
+Starship uses Luna-style bracketed modules with a built-in Tokyo Night palette,
+two-component directory truncation, and a cyan Git repository root. Its colors
+are defined in `~/.config/setup-vps/starship.toml`; no Kitty or Luna theme files
+are needed. The prompt colors work over SSH in a terminal with true-color
+support. The terminal's background and font are still configured locally.
+
 These selected-user exports are replaced without backups on every run:
 
 - `~/.zshrc`
@@ -94,5 +100,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 Tests use temporary homes and stub privileged host operations. CI also checks
-real apt package availability across every supported distro release. Full
+real apt package availability across every supported distro release and renders
+the Tokyo Night prompt with native Starship on Debian 13. The native rendering
+test skips when Starship is unavailable. Full
 service startup and interactive login require a systemd VPS.
