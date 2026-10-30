@@ -13,27 +13,33 @@ Universe repository to be enabled.
 ## What happens
 
 1. Validate the OS, architecture, and existing Docker package conflicts.
-2. Update apt indexes and upgrade installed packages, keeping existing system
-   configuration. Upgrades may restart services. Setup never reboots the VPS.
-3. When run directly as root, ask whether to create a user. A new user gets a
-   password and membership in `sudo`. Declining configures root. Through sudo,
-   setup configures the original user.
-4. Install packages, enable Docker at boot, and configure the selected user's
-   tools, plugins, and default Zsh shell.
-5. Ask for each missing global Git identity field (`user.name`, `user.email`).
-6. Offer an Ed25519 key at `~/.ssh/id_ed25519`. ssh-keygen prompts for an optional
-   passphrase. Setup prints the public key and private key path. Existing private
-   or public key paths are kept. This key is for outgoing connections, such as
-   GitHub; incoming VPS login needs your computer's public key in
-   `~/.ssh/authorized_keys`.
-7. Run `apt-get autoremove -y` to remove unused dependencies, then verify the
-   tools, Zsh integrations, and Docker daemon. Print login and reboot
-   guidance. Reconnect to activate the default shell and changed groups.
+2. When run directly as root, ask whether to create a user and collect the
+   username. Declining selects root. Through sudo, select the original user.
+3. Collect Git identity before package updates. Use the selected Linux username
+   for a missing `user.name` and ask for a missing `user.email`. Existing Git
+   identity is kept. If Git or runuser is unavailable, collect an email candidate
+   now and recheck existing config after installation.
+4. Update apt indexes, upgrade installed packages, and install tools. Keep
+   existing system configuration. Upgrades may restart services; setup never
+   reboots the VPS.
+5. Create the selected new account, prompt for its password, and add it to
+   `sudo`. Apply missing Git identity fields, enable Docker at boot, and
+   configure the selected user's tools, plugins, and default Zsh shell.
+6. Run `apt-get autoremove -y` and verify the tools, Docker, selected user's Zsh
+   startup files, login shell, and plugin loading.
+7. Print the configured home, `.zshrc` path, and login command. The existing
+   terminal keeps its current shell; use `sudo -iu USER` to open the configured
+   account's login shell. Reconnect to activate changed groups.
 
 Yes/no prompts default to **no**. Closed input or a command failure stops setup
 with a nonzero exit. Completed package/account changes remain; fix the cause and
 rerun. To configure an existing non-root user on a rerun, run through that user's
 sudo session.
+
+Terminal output uses bright setup headings and dim gray tool logs, with warnings
+in yellow and errors in red. Redirected output, `TERM=dumb`, and `NO_COLOR=1`
+disable these colors. Failed commands report the phase and selected user/home.
+SSH keys are managed separately; setup does not generate or replace them.
 
 ## Installed tools
 

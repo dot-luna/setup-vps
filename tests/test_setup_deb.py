@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import pty
 import shutil
 import stat
 import subprocess
@@ -18,6 +19,57 @@ as_user() {
     HOME="$TARGET_HOME" XDG_CONFIG_HOME="$TARGET_HOME/.config" \
         GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$TARGET_HOME/.gitconfig" \
         command "$@"
+}
+'''
+
+# All run_setup phases that mutate a host are replaced. The real orchestrator
+# can then demonstrate prompt ordering and stop-on-failure behavior safely.
+SETUP_PHASES = r'''
+phase() {
+    printf 'event:%s\n' "$1"
+    if [[ "${TEST_FAIL_PHASE:-}" == "$1" ]]; then
+        return 37
+    fi
+}
+select_user() { phase select; TARGET_USER=alice; TARGET_GROUP=alice; }
+collect_git_identity() { phase collect; GIT_NAME=alice; GIT_EMAIL=alice@example.com; }
+install_system_packages() { phase apt; }
+create_user() { phase account; }
+configure_git() { phase git; }
+install_docker() { phase docker; }
+install_user_tools() { phase tools; }
+install_plugins() { phase plugins; }
+configure_zsh() { phase zsh; }
+cleanup_packages() { phase cleanup; }
+verify_install() { phase verify; }
+print_summary() { phase summary; }
+mktemp() {
+    [[ "$*" == '-d /tmp/setup-vps.XXXXXX' ]]
+    printf '%s\n' "$TEST_DIRECTORY/work"
+}
+chown() { [[ "$*" == "alice:alice $TEST_DIRECTORY/work" ]]; }
+rm() {
+    [[ "$1" == -rf && "$2" == -- && "$3" == "$TEST_DIRECTORY/work" ]]
+    command rm "$@"
+}
+'''
+
+# Files and Zsh startup run for real; Docker and installed tool checks stay local
+# stubs so verification failures can be tested without any system installation.
+VERIFY_TOOLS = r'''
+getent() {
+    [[ "$*" == "passwd $TARGET_USER" ]]
+    printf '%s:x:1001:1001::%s:%s\n' "$TARGET_USER" "$TARGET_HOME" "${TEST_LOGIN_SHELL:-/usr/bin/zsh}"
+}
+systemctl() { :; }
+docker() { :; }
+as_user() {
+    if [[ "$1" == test ]]; then
+        command "$@"
+    elif [[ "$1" == zsh ]]; then
+        shift
+        HOME="$TARGET_HOME" ZDOTDIR="$TARGET_HOME" command zsh -d "$@"
+    fi
 }
 '''
 
@@ -78,6 +130,103 @@ class InstallerTests(unittest.TestCase):
             f"ID={distro}\nVERSION_ID={version}\nVERSION_CODENAME={codename}\n"
         )
         return path
+
+    def test_failure_report_preserves_status_and_identifies_user_home_and_phase(self):
+        result = self.bash(
+            'report_failure 37 123 install_user_tools\nprintf unsafe',
+            expected=37,
+        )
+        self.assertIn("Failed in install_user_tools at line 123", result.stderr)
+        self.assertIn("alice", result.stderr)
+        self.assertIn(str(self.home), result.stderr)
+        self.assertNotIn("unsafe", result.stdout)
+
+    def zsh_startup(self, *, omit=None):
+        module = self.home / ".config/setup-vps/zshrc"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        (self.home / ".zshrc").write_text('source "$HOME/.config/setup-vps/zshrc"\n')
+        module.write_text("\n".join(
+            f"function {function}() {{ :; }}"
+            for function in ("z", "fzf-history-widget", "_zsh_highlight", "fzf-tab-complete", "_zsh_autosuggest_start")
+            if function != omit
+        ) + "\n")
+
+    def test_piped_output_uses_no_ansi_codes(self):
+        result = self.bash(
+            r'''
+log 'Installing tools'
+run_tool bash -c 'printf "ordinary stdout\n"; printf "ordinary stderr\n" >&2'
+''',
+            env={"TERM": "xterm-256color", "NO_COLOR": ""},
+        )
+        self.assertEqual(result.stdout, "\n==> Installing tools\nordinary stdout\n")
+        self.assertEqual(result.stderr, "ordinary stderr\n")
+        self.assertNotIn("\033", result.stdout + result.stderr)
+
+    def test_tty_color_output_respects_no_color(self):
+        for no_color in ("", "1"):
+            with self.subTest(no_color=no_color):
+                master, slave = pty.openpty()
+                try:
+                    self.bash(
+                        r'''
+exec > "$TEST_TTY"
+log 'Installing tools'
+run_tool printf 'ordinary output\n'
+''',
+                        env={"TEST_TTY": os.ttyname(slave), "TERM": "xterm-256color", "NO_COLOR": no_color},
+                    )
+                    output = os.read(master, 4096).decode()
+                    self.assertIn("Installing tools", output)
+                    self.assertIn("ordinary output", output)
+                    if no_color:
+                        self.assertNotIn("\033", output)
+                    else:
+                        self.assertIn("\033[1;36m", output)
+                        self.assertIn("\033[2;37m", output)
+                finally:
+                    os.close(master)
+                    os.close(slave)
+
+    def test_tool_renderer_dims_noise_and_highlights_warning_and_error_lines(self):
+        result = self.bash(
+            r'''
+use_color() { return 0; }
+emit() {
+    printf '\033[32mregular output\033[0m\nWARNING: attention\nfatal: broken\n'
+    printf 'W: stderr warning\nE: stderr error\n' >&2
+}
+run_tool emit
+'''
+        )
+        self.assertEqual(result.stdout.splitlines(), [
+            "\033[2;37mregular output\033[0m",
+            "\033[33mWARNING: attention\033[0m",
+            "\033[1;31mfatal: broken\033[0m",
+            "\033[33mW: stderr warning\033[0m",
+            "\033[1;31mE: stderr error\033[0m",
+        ])
+        self.assertEqual(result.stderr, "")
+
+    def test_tool_failures_preserve_status_and_stop_setup_with_or_without_color(self):
+        for colored in (False, True):
+            with self.subTest(colored=colored):
+                result = self.bash(
+                    "use_color() { return " + ("0" if colored else "1") + "; }\n"
+                    + "run_tool bash -c 'printf \"ERROR: unavailable\\n\" >&2; exit 37'\n"
+                    + "printf 'unsafe continuation'",
+                    expected=37,
+                )
+                self.assertIn("ERROR: unavailable", result.stdout + result.stderr)
+                self.assertNotIn("unsafe continuation", result.stdout)
+                if colored:
+                    self.assertIn("\033[1;31m", result.stdout)
+
+    def test_own_errors_stand_out_in_color(self):
+        result = self.bash(
+            "use_color() { return 0; }\ndie 'installation failed'", expected=1
+        )
+        self.assertEqual(result.stderr, "\033[1;31msetup-vps: installation failed\033[0m\n")
 
     def test_yes_no_defaults_case_insensitivity_and_invalid_input(self):
         for answer, expected in (("\n", "no"), ("n\n", "no"), ("NO\n", "no"),
@@ -162,6 +311,8 @@ id() { printf root; }
 adduser() { die 'unexpected account creation'; }
 usermod() { die 'unexpected group modification'; }
 select_user
+[[ "$CREATE_USER" == 0 ]]
+create_user
 printf '\nselected=%s:%s:%s\n' "$TARGET_USER" "$TARGET_GROUP" "$TARGET_HOME"
 ''',
             "no\n",
@@ -178,6 +329,8 @@ ask() { die 'unexpected prompt'; }
 adduser() { die 'unexpected account creation'; }
 usermod() { die 'unexpected group modification'; }
 select_user
+[[ "$CREATE_USER" == 0 ]]
+create_user
 printf '\nselected=%s:%s\n' "$TARGET_USER" "$TARGET_GROUP"
 '''
         )
@@ -186,12 +339,14 @@ printf '\nselected=%s:%s\n' "$TARGET_USER" "$TARGET_GROUP"
     def test_new_user_validation_password_and_sudo_membership(self):
         result = self.bash(
             r'''
+planned_home=$TARGET_HOME
+unset TARGET_HOME
 getent() {
     [[ "$1" == passwd ]]
     if [[ "$2" == taken ]]; then
         printf 'taken:x:1000:1000::/home/taken:/bin/bash\n'
     elif [[ "$2" == alice && -e "$WORK_DIR/created" ]]; then
-        printf 'alice:x:1001:1001::%s:/bin/bash\n' "$TARGET_HOME"
+        printf 'alice:x:1001:1001::%s:/bin/bash\n' "$planned_home"
     else
         return 2
     fi
@@ -201,16 +356,70 @@ passwd() { printf 'passwd:%s\n' "$*"; }
 usermod() { printf 'usermod:%s\n' "$*"; }
 id() { printf alice; }
 select_user
+[[ "$CREATE_USER" == 1 && "$TARGET_USER" == alice && ! -v TARGET_HOME ]]
+[[ ! -e "$WORK_DIR/created" ]]
+printf 'account is deferred\n'
+create_user
 printf '\nselected=%s\n' "$TARGET_USER"
 ''',
             "yes\nBadName\n_alice\ntaken\nalice\n",
         )
         self.assertEqual(result.stderr.count("Use a lowercase username"), 2)
         self.assertIn("That user already exists", result.stderr)
+        self.assertLess(result.stdout.index("account is deferred"), result.stdout.index("adduser:"))
         self.assertIn("adduser:--disabled-password --gecos  alice", result.stdout)
         self.assertIn("passwd:alice", result.stdout)
         self.assertIn("usermod:-aG sudo alice", result.stdout)
         self.assertIn("selected=alice", result.stdout)
+
+    def test_new_user_and_git_questions_do_not_require_home_or_write_accounts(self):
+        result = self.bash(
+            r'''
+unset TARGET_HOME TARGET_GROUP
+getent() { [[ "$*" == 'passwd alice' ]]; return 2; }
+adduser() { die 'unexpected account creation'; }
+passwd() { die 'unexpected password prompt'; }
+usermod() { die 'unexpected group modification'; }
+apt-get() { die 'unexpected package installation'; }
+as_user() { die 'unexpected command for a prospective account'; }
+select_user
+collect_git_identity
+[[ "$CREATE_USER" == 1 && "$TARGET_USER" == alice && ! -v TARGET_HOME ]]
+printf 'identity=%s:%s\n' "$GIT_NAME" "$GIT_EMAIL"
+read -r untouched <&3
+printf 'remaining=%s\n' "$untouched"
+''',
+            "yes\nalice\nalice@example.com\nsentinel\n",
+        )
+        self.assertIn("identity=alice:alice@example.com", result.stdout)
+        self.assertIn("remaining=sentinel", result.stdout)
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_missing_git_name_uses_root_or_original_sudo_username(self):
+        for sudo_user, username, input in (("", "root", "no\n"), ("operator", "operator", "")):
+            with self.subTest(sudo_user=sudo_user):
+                result = self.bash(
+                    LOCAL_USER
+                    + r'''
+getent() { printf '%s:x:1001:1001::%s:/bin/bash\n' "$2" "$TARGET_HOME"; }
+id() { printf '%s' "$TARGET_USER"; }
+adduser() { die 'unexpected account creation'; }
+passwd() { die 'unexpected password prompt'; }
+usermod() { die 'unexpected group modification'; }
+apt-get() { die 'unexpected package installation'; }
+select_user
+collect_git_identity
+printf 'identity=%s:%s\n' "$GIT_NAME" "$GIT_EMAIL"
+read -r untouched <&3
+printf 'remaining=%s\n' "$untouched"
+''',
+                    input + "shared@example.com\nsentinel\n",
+                    env={"SUDO_USER": sudo_user},
+                )
+                self.assertIn(f"identity={username}:shared@example.com", result.stdout)
+                self.assertIn("remaining=sentinel", result.stdout)
+                self.assertEqual(list(self.home.iterdir()), [])
 
     def test_invalid_user_home_stops_before_configuration(self):
         result = self.bash(
@@ -270,6 +479,7 @@ package_available fastfetch
         result = self.bash(
             r'''
 FETCH_TOOL=neofetch
+getent() { printf 'alice:x:1001:1001::%s:/usr/bin/zsh\n' "$TARGET_HOME"; }
 systemctl() { :; }
 docker() { :; }
 as_user() {
@@ -283,6 +493,69 @@ verify_install
 '''
         )
         self.assertIn("OS: Debian", result.stdout)
+
+    def test_wrong_login_shell_prevents_success(self):
+        self.zsh_startup()
+        result = self.bash(
+            VERIFY_TOOLS + "verify_install\nprint_summary",
+            env={"TEST_LOGIN_SHELL": "/bin/bash", "FETCH_TOOL": "fastfetch"},
+            expected=1,
+        )
+        self.assertIn("Default shell for alice is not /usr/bin/zsh", result.stderr)
+        self.assertNotIn("Setup complete", result.stdout)
+
+    def test_missing_zsh_startup_files_prevent_success(self):
+        for relative, message in ((".zshrc", "Missing Zsh startup file"), (".config/setup-vps/zshrc", "Missing Zsh config")):
+            with self.subTest(relative=relative):
+                self.zsh_startup()
+                missing = self.home / relative
+                missing.unlink()
+                result = self.bash(
+                    VERIFY_TOOLS + "verify_install\nprint_summary",
+                    env={"FETCH_TOOL": "fastfetch"},
+                    expected=1,
+                )
+                self.assertIn(f"{message}: {missing}", result.stderr)
+                self.assertNotIn("Setup complete", result.stdout)
+
+    @unittest.skipUnless(shutil.which("zsh"), "Zsh is required")
+    def test_missing_zsh_integrations_fail_real_startup_verification(self):
+        for function in ("z", "fzf-history-widget", "_zsh_highlight", "fzf-tab-complete", "_zsh_autosuggest_start"):
+            with self.subTest(function=function):
+                self.zsh_startup(omit=function)
+                result = self.bash(
+                    VERIFY_TOOLS + "verify_install\nprint_summary",
+                    env={"FETCH_TOOL": "fastfetch"},
+                    expected=1,
+                )
+                self.assertIn("Zsh startup failed for alice", result.stderr)
+                self.assertIn(str(self.home / ".zshrc"), result.stderr)
+                self.assertIn(str(self.home / ".config/setup-vps/zshrc"), result.stderr)
+                self.assertNotIn("Setup complete", result.stdout)
+
+    @unittest.skipUnless(shutil.which("zsh"), "Zsh is required")
+    def test_valid_selected_user_zsh_startup_passes_verification(self):
+        self.zsh_startup()
+        result = self.bash(
+            VERIFY_TOOLS + "verify_install\nprint_summary",
+            env={"FETCH_TOOL": "fastfetch"},
+        )
+        self.assertIn("Setup complete", result.stdout)
+        self.assertIn(f"Zsh startup file: {self.home}/.zshrc", result.stdout)
+
+    def test_summary_identifies_selected_home_and_new_login_command(self):
+        for username in ("alice", "root"):
+            with self.subTest(username=username):
+                result = self.bash(
+                    "print_summary",
+                    env={"TARGET_USER": username, "FETCH_TOOL": "fastfetch"},
+                )
+                self.assertIn(f"Configured user: {username}\n", result.stdout)
+                self.assertIn(f"Home: {self.home}\n", result.stdout)
+                self.assertIn(f"Zsh startup file: {self.home}/.zshrc\n", result.stdout)
+                self.assertIn(f"sudo -iu {username}\n", result.stdout)
+                self.assertIn("current terminal keeps its shell", result.stdout)
+                self.assertNotIn(f"Zsh startup file: {self.directory}/.zshrc", result.stdout)
 
     def test_system_install_updates_upgrades_and_installs_selected_fetch(self):
         result = self.bash(
@@ -328,6 +601,40 @@ print_summary
                 self.assertEqual("Setup complete" in result.stdout, status == 0)
                 if status == 0:
                     self.assertLess(result.stdout.index("cleanup attempted"), result.stdout.index("verification after cleanup"))
+
+    def test_setup_collects_choices_before_install_and_completes_after_verification(self):
+        result = self.bash(SETUP_PHASES + "run_setup")
+        events = [line.removeprefix("event:") for line in result.stdout.splitlines()]
+        for earlier, later in (
+            ("select", "collect"),
+            ("collect", "apt"),
+            ("apt", "account"),
+            ("account", "git"),
+            ("git", "docker"),
+            ("zsh", "cleanup"),
+            ("cleanup", "verify"),
+            ("verify", "summary"),
+        ):
+            with self.subTest(earlier=earlier, later=later):
+                self.assertLess(events.index(earlier), events.index(later))
+        self.assertEqual(events[-1], "summary")
+        self.assertFalse(self.work.exists())
+
+    def test_cleanup_or_verification_failure_prevents_success(self):
+        for failing_phase in ("cleanup", "verify"):
+            with self.subTest(failing_phase=failing_phase):
+                self.work.mkdir(exist_ok=True)
+                result = self.bash(
+                    SETUP_PHASES + "run_setup",
+                    env={"TEST_FAIL_PHASE": failing_phase},
+                    expected=37,
+                )
+                events = [line.removeprefix("event:") for line in result.stdout.splitlines()]
+                self.assertIn(failing_phase, events)
+                self.assertNotIn("summary", events)
+                if failing_phase == "cleanup":
+                    self.assertNotIn("verify", events)
+                self.assertFalse(self.work.exists())
 
     def test_docker_conflicts_only_block_installed_packages(self):
         result = self.bash(
@@ -507,98 +814,151 @@ install_plugins
         original = '[user]\n\tname = Existing Name\n\temail = old@example.com\n# keep me\n'
         config = self.home / ".gitconfig"
         config.write_text(original)
-        self.bash(LOCAL_USER + "configure_git")
+        result = self.bash(
+            LOCAL_USER
+            + "CREATE_USER=0\ncollect_git_identity\nconfigure_git\n"
+            + "printf 'identity=%s:%s\\n' \"$GIT_NAME\" \"$GIT_EMAIL\""
+        )
+        self.assertIn("identity=Existing Name:old@example.com", result.stdout)
         self.assertEqual(config.read_text(), original)
 
     @unittest.skipUnless(shutil.which("git"), "git is required")
-    def test_git_only_prompts_for_missing_identity(self):
+    def test_missing_git_name_uses_selected_username_without_prompting(self):
         (self.home / ".gitconfig").write_text('[user]\n\temail = old@example.com\n')
         result = self.bash(
             LOCAL_USER
             + r'''
+CREATE_USER=0
+collect_git_identity
+if as_user git config --global --get user.name; then
+    die 'collection unexpectedly wrote the name'
+fi
 configure_git
 printf 'name=%s\n' "$(as_user git config --global --get user.name)"
 printf 'email=%s\n' "$(as_user git config --global --get user.email)"
 read -r untouched <&3
 printf 'remaining=%s\n' "$untouched"
 ''',
-            "\nJane Smith\nsentinel\n",
+            "sentinel\n",
         )
-        self.assertIn("name=Jane Smith", result.stdout)
+        self.assertIn("name=alice", result.stdout)
         self.assertIn("email=old@example.com", result.stdout)
         self.assertIn("remaining=sentinel", result.stdout)
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_git_only_prompts_for_missing_email_and_preserves_existing_name(self):
+        (self.home / ".gitconfig").write_text('[user]\n\tname = Existing Name\n')
+        result = self.bash(
+            LOCAL_USER
+            + r'''
+CREATE_USER=0
+collect_git_identity
+if as_user git config --global --get user.email; then
+    die 'collection unexpectedly wrote the email'
+fi
+configure_git
+printf 'name=%s\n' "$(as_user git config --global --get user.name)"
+printf 'email=%s\n' "$(as_user git config --global --get user.email)"
+read -r untouched <&3
+printf 'remaining=%s\n' "$untouched"
+''',
+            "\nnew@example.com\nsentinel\n",
+        )
+        self.assertIn("name=Existing Name", result.stdout)
+        self.assertIn("email=new@example.com", result.stdout)
+        self.assertIn("remaining=sentinel", result.stdout)
         self.assertIn("Enter a nonempty value", result.stderr)
+
+    def test_collection_works_without_git_or_runuser_and_performs_no_writes(self):
+        for missing in ("git", "runuser"):
+            with self.subTest(missing=missing):
+                result = self.bash(
+                    r'''
+CREATE_USER=0
+command() {
+    if [[ "$1" == -v && "$2" == "$TEST_MISSING_TOOL" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+as_user() { die 'unexpected user command before required tools exist'; }
+adduser() { die 'unexpected account creation'; }
+usermod() { die 'unexpected group modification'; }
+apt-get() { die 'unexpected apt write'; }
+collect_git_identity
+printf 'identity=%s:%s\n' "$GIT_NAME" "$GIT_EMAIL"
+read -r untouched <&3
+printf 'remaining=%s\n' "$untouched"
+''',
+                    "early@example.com\nsentinel\n",
+                    env={"TEST_MISSING_TOOL": missing},
+                )
+                self.assertIn("identity=alice:early@example.com", result.stdout)
+                self.assertIn("remaining=sentinel", result.stdout)
+                self.assertEqual(list(self.home.iterdir()), [])
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_git_identity_created_while_installing_takes_precedence(self):
+        original = '[user]\nname = Added During Install\nemail = late@example.com\n# preserve this\n'
+        result = self.bash(
+            LOCAL_USER
+            + r'''
+CREATE_USER=0
+collect_git_identity
+printf '%s' "$TEST_LATE_CONFIG" > "$TARGET_HOME/.gitconfig"
+configure_git
+printf 'name=%s\n' "$(as_user git config --global --get user.name)"
+printf 'email=%s\n' "$(as_user git config --global --get user.email)"
+''',
+            "early@example.com\n",
+            env={"TEST_LATE_CONFIG": original},
+        )
+        self.assertIn("name=Added During Install", result.stdout)
+        self.assertIn("email=late@example.com", result.stdout)
+        self.assertEqual((self.home / ".gitconfig").read_text(), original)
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_git_missing_before_install_preserves_identity_when_git_becomes_available(self):
+        original = '[user]\nname = Existing Name\nemail = old@example.com\n'
+        (self.home / ".gitconfig").write_text(original)
+        result = self.bash(
+            LOCAL_USER
+            + r'''
+CREATE_USER=0
+command() {
+    if [[ "$*" == '-v git' ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+collect_git_identity
+unset -f command
+configure_git
+printf 'name=%s\n' "$(as_user git config --global --get user.name)"
+printf 'email=%s\n' "$(as_user git config --global --get user.email)"
+''',
+            "early@example.com\n",
+        )
+        self.assertIn("name=Existing Name", result.stdout)
+        self.assertIn("email=old@example.com", result.stdout)
+        self.assertEqual((self.home / ".gitconfig").read_text(), original)
 
     @unittest.skipUnless(shutil.which("git"), "git is required")
     def test_malformed_git_config_is_an_error_instead_of_an_identity_prompt(self):
         config = self.home / ".gitconfig"
         original = '[user\nname = damaged\n'
         config.write_text(original)
-        result = self.bash(LOCAL_USER + "configure_git", "New Name\n", expected=1)
-        self.assertIn("Cannot read Git config", result.stderr)
-        self.assertEqual(config.read_text(), original)
-
-    def test_ssh_decline_does_not_create_files(self):
-        self.bash(LOCAL_USER + "configure_ssh", "no\n")
-        self.assertFalse((self.home / ".ssh").exists())
-
-    @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("git"), "OpenSSH and Git are required")
-    def test_new_ssh_key_has_permissions_and_only_public_material_is_printed(self):
-        (self.home / ".gitconfig").write_text('[user]\nemail = alice@example.com\n')
-        result = self.bash(
-            r'''
-as_user() {
-    if [[ "$1" == ssh-keygen ]]; then
-        shift
-        command ssh-keygen -N '' "$@"
-    else
-        HOME="$TARGET_HOME" XDG_CONFIG_HOME="$TARGET_HOME/.config" \
-            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$TARGET_HOME/.gitconfig" command "$@"
-    fi
-}
-configure_ssh
-''',
-            "yes\n",
-        )
-        ssh = self.home / ".ssh"
-        private = ssh / "id_ed25519"
-        public = ssh / "id_ed25519.pub"
-        self.assertEqual(stat.S_IMODE(ssh.stat().st_mode), 0o700)
-        self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o644)
-        self.assertTrue(public.read_text().startswith("ssh-ed25519 "))
-        self.assertTrue(public.read_text().endswith(" alice@example.com\n"))
-        self.assertIn(public.read_text().strip(), result.stdout)
-        self.assertIn(str(private), result.stdout)
-        self.assertNotIn("BEGIN OPENSSH PRIVATE KEY", result.stdout)
-        self.assertNotIn(private.read_text(), result.stdout)
-
-    def test_existing_or_partial_ssh_keys_and_dangling_links_are_preserved(self):
-        for kind in ("both", "private", "public", "private-link", "public-link"):
-            with self.subTest(kind=kind):
-                home = self.directory / kind
-                ssh = home / ".ssh"
-                ssh.mkdir(parents=True)
-                private = ssh / "id_ed25519"
-                public = ssh / "id_ed25519.pub"
-                if kind in ("both", "private"):
-                    private.write_text("existing private bytes")
-                if kind in ("both", "public"):
-                    public.write_text("existing public bytes")
-                if kind.endswith("-link"):
-                    (private if kind == "private-link" else public).symlink_to(ssh / "missing")
-                before = {p.name: (p.is_symlink(), os.readlink(p) if p.is_symlink() else p.read_bytes()) for p in ssh.iterdir()}
+        for phase in ("collect_git_identity", "configure_git"):
+            with self.subTest(phase=phase):
                 result = self.bash(
-                    r'''
-ask() { die 'unexpected SSH prompt'; }
-as_user() { die 'unexpected SSH command'; }
-configure_ssh
-''',
-                    env={"TARGET_HOME": home},
+                    LOCAL_USER
+                    + "CREATE_USER=0\nGIT_NAME=alice\nGIT_EMAIL=early@example.com\n"
+                    + phase,
+                    "unexpected input\n",
+                    expected=1,
                 )
-                after = {p.name: (p.is_symlink(), os.readlink(p) if p.is_symlink() else p.read_bytes()) for p in ssh.iterdir()}
-                self.assertEqual(before, after)
-                self.assertIn("Keeping existing SSH key paths", result.stdout)
+                self.assertIn("Cannot read Git config", result.stderr)
+                self.assertEqual(config.read_text(), original)
 
     def test_atomic_writes_replace_symlinks_and_do_not_touch_their_targets(self):
         for function in ("write_user_file", "write_system_file"):
