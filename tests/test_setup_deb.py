@@ -574,7 +574,7 @@ install_system_packages
         self.assertIn("--force-confold upgrade -y", lines[1])
         self.assertIn("frontend=noninteractive;restart=a", lines[1])
         self.assertIn(" install -y ", lines[2])
-        for package in ("sudo", "git", "zsh", "kitty-terminfo", "bat", "zoxide", "neofetch"):
+        for package in ("sudo", "git", "zsh", "neovim", "kitty-terminfo", "bat", "zoxide", "neofetch"):
             self.assertIn(package, lines[2].split(";")[0].split())
         self.assertNotIn("fastfetch", lines[2])
 
