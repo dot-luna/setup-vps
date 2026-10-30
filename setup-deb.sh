@@ -193,7 +193,7 @@ install_system_packages() {
     select_fetch
     apt_install sudo adduser passwd ca-certificates curl wget gnupg git build-essential \
         unzip zip xz-utils jq ripgrep fd-find bat zoxide btop tmux rsync \
-        kitty-terminfo zsh openssh-client util-linux "$FETCH_TOOL"
+        kitty-terminfo zsh neovim openssh-client util-linux "$FETCH_TOOL"
 }
 
 # Stage next to the destination so readers see a complete file after rename.

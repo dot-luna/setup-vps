@@ -27,7 +27,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            bash zsh python3 shellcheck openssh-client util-linux \
+            bash zsh neovim python3 shellcheck openssh-client util-linux \
             sudo adduser passwd ca-certificates curl wget gnupg git build-essential \
             unzip zip xz-utils jq ripgrep fd-find bat zoxide btop tmux rsync kitty-terminfo
       - uses: actions/checkout@v7
@@ -43,6 +43,7 @@ jobs:
           bash -n setup-deb.sh
           shellcheck setup-deb.sh
           python3 -m unittest discover -s tests -v
+          nvim --headless -u NONE -i NONE '+quit'
       - name: Verify platform and system info package
         run: |
           source ./setup-deb.sh

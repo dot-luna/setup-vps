@@ -45,7 +45,7 @@ SSH keys are managed separately; setup does not generate or replace them.
 
 | Source | Tools |
 | --- | --- |
-| Distro apt | Git, curl, wget, CA certificates, GPG, sudo, adduser/passwd, build-essential, zip/unzip, xz, jq, ripgrep, fd-find, bat, zoxide, btop, tmux, rsync, kitty-terminfo, Zsh, OpenSSH client, util-linux |
+| Distro apt | Git, curl, wget, CA certificates, GPG, sudo, adduser/passwd, build-essential, zip/unzip, xz, jq, ripgrep, fd-find, bat, zoxide, btop, tmux, rsync, kitty-terminfo, Zsh, Neovim (`nvim`), OpenSSH client, util-linux |
 | Distro apt | fastfetch when available, otherwise neofetch |
 | Official Docker apt repository | Docker Engine/CLI, containerd, Compose plugin, Buildx plugin |
 | mise | Latest fzf, eza, Starship; no language runtimes installed |
