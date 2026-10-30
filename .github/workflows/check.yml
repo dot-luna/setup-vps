@@ -1,0 +1,49 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'debian:13', 'ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install test dependencies and real server packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash zsh python3 shellcheck openssh-client util-linux \
+            sudo adduser passwd ca-certificates curl wget gnupg git build-essential \
+            unzip zip xz-utils jq ripgrep fd-find bat zoxide btop tmux rsync kitty-terminfo
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate shell and behavior
+        run: |
+          bash -n setup-deb.sh
+          shellcheck setup-deb.sh
+          python3 -m unittest discover -s tests -v
+      - name: Verify platform and system info package
+        run: |
+          source ./setup-deb.sh
+          detect_platform
+          select_fetch
+          apt-get install -y --no-install-recommends "$FETCH_TOOL"
+          TARGET_USER=$(id -un)
+          TARGET_HOME=$HOME
+          verify_fetch
